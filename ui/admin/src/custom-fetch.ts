@@ -1,4 +1,4 @@
-import { getAccessToken, clearToken, startAuthFlow, isAuthEnabled } from './utils/auth';
+import { getAccessToken, clearAuth, startAuthFlow, isAuthEnabled } from './utils/auth';
 
 const getBody = <T>(c: Response | Request): Promise<T> => {
     const contentType = c.headers.get('content-type');
@@ -22,20 +22,6 @@ const getBody = <T>(c: Response | Request): Promise<T> => {
     return requestUrl.toString();
   };
 
-  // NOTE: Add headers
-  const getHeaders = (headers?: HeadersInit): HeadersInit => {
-    const token = getAccessToken();
-    if (token) {
-      return {
-        ...headers,
-        Authorization: `Bearer ${token}`,
-      };
-    }
-    return {
-      ...headers,
-    };
-  };
-
   const REDIRECT_TS_KEY = 'wanaku_auth_redirect_ts';
   const REDIRECT_LOOP_MS = 10_000;
 
@@ -44,11 +30,15 @@ const getBody = <T>(c: Response | Request): Promise<T> => {
     options: RequestInit,
   ): Promise<T> => {
     const requestUrl = getUrl(url);
-    const requestHeaders = getHeaders(options.headers);
+
+    const token = await getAccessToken();
+    const headers: HeadersInit = token
+      ? { ...options.headers, Authorization: `Bearer ${token}` }
+      : { ...options.headers };
 
     const requestInit: RequestInit = {
       ...options,
-      headers: requestHeaders,
+      headers,
       redirect: 'manual',
     };
 
@@ -63,7 +53,7 @@ const getBody = <T>(c: Response | Request): Promise<T> => {
           throw new Error('Authentication redirect loop detected — check OIDC configuration');
         }
         sessionStorage.setItem(REDIRECT_TS_KEY, String(Date.now()));
-        clearToken();
+        clearAuth();
         await startAuthFlow();
       }
     }
