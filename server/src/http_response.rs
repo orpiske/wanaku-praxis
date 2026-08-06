@@ -14,3 +14,13 @@ pub fn json_err(status: u16, message: &str) -> Response<Vec<u8>> {
         .body(body)
         .expect("valid json error response")
 }
+
+#[expect(clippy::expect_used, reason = "valid static response")]
+pub fn json_response_with_status(status: u16, body: Vec<u8>) -> Response<Vec<u8>> {
+    Response::builder()
+        .status(status)
+        .header("Content-Type", "application/json")
+        .header("Content-Length", body.len())
+        .body(body)
+        .expect("valid json response")
+}

@@ -300,6 +300,32 @@ pub(super) fn resolve_chat_route(method: &str, path: &str) -> ChatRoute {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum OidcProxyRoute {
+    Discovery,
+    Certs,
+    Authorize,
+    Token,
+    Logout,
+    NotFound,
+}
+
+pub(super) fn resolve_oidc_proxy_route(method: &str, path: &str) -> OidcProxyRoute {
+    let suffix = match path.strip_prefix("/q/oidc") {
+        Some(s) => s,
+        None => return OidcProxyRoute::NotFound,
+    };
+
+    match (method, suffix) {
+        ("GET", "/.well-known/openid-configuration") => OidcProxyRoute::Discovery,
+        ("GET", "/certs") => OidcProxyRoute::Certs,
+        ("GET", "/authorize") => OidcProxyRoute::Authorize,
+        ("POST", "/token") => OidcProxyRoute::Token,
+        ("GET", "/logout") => OidcProxyRoute::Logout,
+        _ => OidcProxyRoute::NotFound,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

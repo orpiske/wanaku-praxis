@@ -33,11 +33,11 @@ use self::handlers::{
 use self::response::{json_err, json_ok, raw_json_response, read_body, redirect_response};
 use self::routes::{
     CapabilityRoute, ChatRoute, ForwardRoute, InteractionRoute, ManagementRoute, NamespaceRoute,
-    PromptRoute, ResourceRoute, SafetyRoute, ServiceRoute, ToolRoute,
+    OidcProxyRoute, PromptRoute, ResourceRoute, SafetyRoute, ServiceRoute, ToolRoute,
     resolve_capability_route, resolve_chat_route, resolve_forward_route,
     resolve_interaction_route, resolve_management_route, resolve_namespace_route,
-    resolve_prompt_route, resolve_resource_route, resolve_safety_route, resolve_service_route,
-    resolve_tool_route,
+    resolve_oidc_proxy_route, resolve_prompt_route, resolve_resource_route,
+    resolve_safety_route, resolve_service_route, resolve_tool_route,
 };
 use self::ui::serve_ui;
 
@@ -109,6 +109,11 @@ impl ServeHttp for WanakuManagementService {
             || path.starts_with("/.well-known/oauth-authorization-server/")
         {
             return handle_authorization_server_metadata(&self.auth).await;
+        }
+
+        let oidc_route = resolve_oidc_proxy_route(&method, &path);
+        if oidc_route != OidcProxyRoute::NotFound {
+            return handle_oidc_proxy(&self.auth, oidc_route, http_session).await;
         }
 
         if path.starts_with("/api/") {
@@ -308,6 +313,127 @@ async fn check_auth(
         Err(e) => {
             tracing::debug!(error = %e, "management API auth rejected");
             Some(auth_error_response(&e))
+        }
+    }
+}
+
+async fn handle_oidc_proxy(
+    auth: &AuthState,
+    route: OidcProxyRoute,
+    session: &mut ServerSession,
+) -> Response<Vec<u8>> {
+    if !auth.is_enabled() {
+        return json_err(404, "auth is disabled");
+    }
+
+    let base = format!(
+        "{}/realms/{}",
+        auth.auth_server().trim_end_matches('/'),
+        auth.realm()
+    );
+
+    match route {
+        OidcProxyRoute::Discovery => {
+            oidc_proxy_get(&format!("{base}/.well-known/openid-configuration")).await
+        }
+        OidcProxyRoute::Certs => {
+            oidc_proxy_get(&format!("{base}/protocol/openid-connect/certs")).await
+        }
+        OidcProxyRoute::Authorize => {
+            let url = format!("{base}/protocol/openid-connect/auth");
+            let qs = session.req_header().uri.query().unwrap_or("");
+            let redirect_url = if qs.is_empty() { url } else { format!("{url}?{qs}") };
+            redirect_response(&redirect_url)
+        }
+        OidcProxyRoute::Token => {
+            let body = match read_body(session).await {
+                Ok(b) => b,
+                Err(resp) => return resp,
+            };
+            oidc_proxy_post(
+                &format!("{base}/protocol/openid-connect/token"),
+                &body,
+            )
+            .await
+        }
+        OidcProxyRoute::Logout => {
+            let url = format!("{base}/protocol/openid-connect/logout");
+            let qs = session.req_header().uri.query().unwrap_or("");
+            let redirect_url = if qs.is_empty() { url } else { format!("{url}?{qs}") };
+            redirect_response(&redirect_url)
+        }
+        OidcProxyRoute::NotFound => json_err(404, "not found"),
+    }
+}
+
+async fn oidc_proxy_get(url: &str) -> Response<Vec<u8>> {
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to create HTTP client for OIDC proxy");
+            return json_err(503, "OIDC proxy error");
+        }
+    };
+
+    match client.get(url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            match resp.bytes().await {
+                Ok(body) => raw_json_response(body.to_vec()),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to read OIDC proxy response");
+                    json_err(503, "OIDC proxy read error")
+                }
+            }
+        }
+        Ok(resp) => {
+            tracing::warn!(status = %resp.status(), url = %url, "OIDC proxy upstream error");
+            json_err(resp.status().as_u16(), "OIDC upstream error")
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, url = %url, "OIDC proxy request failed");
+            json_err(503, "OIDC upstream unreachable")
+        }
+    }
+}
+
+async fn oidc_proxy_post(url: &str, body: &str) -> Response<Vec<u8>> {
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to create HTTP client for OIDC proxy");
+            return json_err(503, "OIDC proxy error");
+        }
+    };
+
+    match client
+        .post(url)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(body.to_owned())
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            match resp.bytes().await {
+                Ok(resp_body) => {
+                    let body_vec = resp_body.to_vec();
+                    crate::http_response::json_response_with_status(status, body_vec)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to read OIDC proxy response");
+                    json_err(503, "OIDC proxy read error")
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, url = %url, "OIDC proxy request failed");
+            json_err(503, "OIDC upstream unreachable")
         }
     }
 }
