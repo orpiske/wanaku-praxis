@@ -1,3 +1,5 @@
+import { getAccessToken, clearToken, startAuthFlow, isAuthEnabled } from './utils/auth';
+
 const getBody = <T>(c: Response | Request): Promise<T> => {
     const contentType = c.headers.get('content-type');
 
@@ -22,8 +24,15 @@ const getBody = <T>(c: Response | Request): Promise<T> => {
 
   // NOTE: Add headers
   const getHeaders = (headers?: HeadersInit): HeadersInit => {
+    const token = getAccessToken();
+    if (token) {
+      return {
+        ...headers,
+        Authorization: `Bearer ${token}`,
+      };
+    }
     return {
-      ...headers
+      ...headers,
     };
   };
 
@@ -47,13 +56,17 @@ const getBody = <T>(c: Response | Request): Promise<T> => {
     const response = await fetch(request);
 
     if (response.type === 'opaqueredirect' || response.status === 401) {
-      const lastRedirect = Number(sessionStorage.getItem(REDIRECT_TS_KEY) || '0');
-      if (Date.now() - lastRedirect < REDIRECT_LOOP_MS) {
-        throw new Error('Authentication redirect loop detected — check OIDC configuration');
+      const enabled = await isAuthEnabled();
+      if (enabled) {
+        const lastRedirect = Number(sessionStorage.getItem(REDIRECT_TS_KEY) || '0');
+        if (Date.now() - lastRedirect < REDIRECT_LOOP_MS) {
+          throw new Error('Authentication redirect loop detected — check OIDC configuration');
+        }
+        sessionStorage.setItem(REDIRECT_TS_KEY, String(Date.now()));
+        clearToken();
+        await startAuthFlow();
+        throw new Error('Redirecting to login');
       }
-      sessionStorage.setItem(REDIRECT_TS_KEY, String(Date.now()));
-      window.location.reload();
-      throw new Error('Redirecting to login');
     }
 
     if (response.ok) {

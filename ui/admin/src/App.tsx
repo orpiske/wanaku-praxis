@@ -1,5 +1,7 @@
-import {HeaderContainer} from "@carbon/react";
+import {useEffect, useState} from "react";
+import {HeaderContainer, Loading} from "@carbon/react";
 import {listNamespaces} from "./hooks/api/use-namespaces";
+import {ensureAuthenticated} from "./utils/auth";
 import "./App.scss";
 
 import Header from "./components/Header";
@@ -7,8 +9,19 @@ import SideNav from "./components/SideNav";
 import Content from "./components/Content";
 
 function App() {
+  const [authReady, setAuthReady] = useState(false);
 
-  listNamespaces(); // pre load namespaces and instatiate singleton during startup
+  useEffect(() => {
+    ensureAuthenticated().then(() => {
+      setAuthReady(true);
+    });
+  }, []);
+
+  if (!authReady) {
+    return <Loading withOverlay />;
+  }
+
+  listNamespaces();
 
   return (
     <HeaderContainer
