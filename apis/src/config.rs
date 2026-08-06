@@ -44,11 +44,50 @@ const WANAKU_SAFETY_RED_ACTION: &str = "WANAKU_SAFETY_RED_ACTION";
 /// Action when classification is **yellow**: `log`, `warn`, or `block` (default `log`).
 const WANAKU_SAFETY_YELLOW_ACTION: &str = "WANAKU_SAFETY_YELLOW_ACTION";
 
+/// Authentication mode selector. Set to `"keycloak"` to enable OIDC auth.
+/// Unset or `"none"` disables all authentication.
+const WANAKU_HTTP_AUTH: &str = "WANAKU_HTTP_AUTH";
+
+/// Keycloak base URL (e.g. `http://localhost:8543`).
+const WANAKU_AUTH_SERVER: &str = "WANAKU_AUTH_SERVER";
+
+/// Keycloak realm name (default `wanaku`).
+const WANAKU_AUTH_REALM: &str = "WANAKU_AUTH_REALM";
+
+/// OIDC client ID for the router (default `wanaku-mcp-router`).
+const WANAKU_AUTH_CLIENT_ID: &str = "WANAKU_AUTH_CLIENT_ID";
+
+/// Required audience claim for MCP bearer tokens (default `wanaku-mcp-client`).
+const WANAKU_AUTH_MCP_AUDIENCE: &str = "WANAKU_AUTH_MCP_AUDIENCE";
+
+/// Comma-separated namespace names that skip authentication (default `public`).
+const WANAKU_AUTH_PUBLIC_NAMESPACES: &str = "WANAKU_AUTH_PUBLIC_NAMESPACES";
+
+/// Maximum seconds to wait for the auth server at startup (default `60`).
+const WANAKU_AUTH_STARTUP_TIMEOUT: &str = "WANAKU_AUTH_STARTUP_TIMEOUT";
+
 /// File-persistence settings, present only when enabled.
 #[derive(Debug, Clone)]
 pub struct PersistEnv {
     /// Directory containing `registry.json`.
     pub dir: PathBuf,
+}
+
+/// OIDC authentication settings, present only when `WANAKU_HTTP_AUTH=keycloak`.
+#[derive(Debug, Clone)]
+pub struct AuthEnv {
+    /// Keycloak base URL.
+    pub server: String,
+    /// Keycloak realm name.
+    pub realm: String,
+    /// OIDC client ID (public client used for code flow).
+    pub client_id: String,
+    /// Required `aud` claim for MCP bearer tokens.
+    pub mcp_audience: String,
+    /// Namespace names that skip authentication.
+    pub public_namespaces: Vec<String>,
+    /// Maximum seconds to wait for auth server at startup.
+    pub startup_timeout_secs: u64,
 }
 
 /// Safety classifier settings, present only when enabled.
@@ -81,6 +120,8 @@ pub struct WanakuEnv {
     pub ui_path: Option<PathBuf>,
     /// Safety classifier config. `None` when the feature is disabled.
     pub safety: Option<SafetyEnv>,
+    /// OIDC auth config. `None` when auth is disabled.
+    pub auth: Option<AuthEnv>,
 }
 
 /// Global configuration, initialized lazily on first access.
@@ -127,6 +168,29 @@ impl WanakuEnv {
                         .unwrap_or_else(|_| "log".to_owned()),
                     yellow_action: std::env::var(WANAKU_SAFETY_YELLOW_ACTION)
                         .unwrap_or_else(|_| "log".to_owned()),
+                }),
+            auth: std::env::var(WANAKU_HTTP_AUTH)
+                .ok()
+                .filter(|v| v.eq_ignore_ascii_case("keycloak"))
+                .map(|_| AuthEnv {
+                    server: std::env::var(WANAKU_AUTH_SERVER)
+                        .unwrap_or_else(|_| "http://localhost:8543".to_owned()),
+                    realm: std::env::var(WANAKU_AUTH_REALM)
+                        .unwrap_or_else(|_| "wanaku".to_owned()),
+                    client_id: std::env::var(WANAKU_AUTH_CLIENT_ID)
+                        .unwrap_or_else(|_| "wanaku-mcp-router".to_owned()),
+                    mcp_audience: std::env::var(WANAKU_AUTH_MCP_AUDIENCE)
+                        .unwrap_or_else(|_| "wanaku-mcp-client".to_owned()),
+                    public_namespaces: std::env::var(WANAKU_AUTH_PUBLIC_NAMESPACES)
+                        .unwrap_or_else(|_| "public".to_owned())
+                        .split(',')
+                        .map(|s| s.trim().to_owned())
+                        .filter(|s| !s.is_empty())
+                        .collect(),
+                    startup_timeout_secs: std::env::var(WANAKU_AUTH_STARTUP_TIMEOUT)
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(60),
                 }),
         }
     }

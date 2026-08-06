@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 dashmap = { workspace = true }
+jsonwebtoken = "9"
 utoipa = "5.5"
 http = { workspace = true }
 prost = { workspace = true }
