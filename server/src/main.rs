@@ -59,6 +59,7 @@ fn main() {
     let mgmt_registry = wanaku_registry.clone();
     let mgmt_interactions = interaction_store.clone();
     let mgmt_safety = safety_state.clone();
+    let mgmt_auth = auth_state.clone();
 
     info!("building wanaku pipelines");
     let pipelines = wanaku_praxis::pipelines::resolve_pipelines(
@@ -98,7 +99,7 @@ fn main() {
     }
 
     let mgmt_addr = &wanaku_praxis_apis::config::ENV.mgmt_listen;
-    let mgmt = wanaku_praxis::management::WanakuManagementService::new(mgmt_registry, mgmt_interactions, mgmt_safety);
+    let mgmt = wanaku_praxis::management::WanakuManagementService::new(mgmt_registry, mgmt_interactions, mgmt_safety, mgmt_auth);
     let mut mgmt_service = pingora_core::services::listening::Service::new(
         "wanaku-management".to_owned(),
         mgmt,

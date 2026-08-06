@@ -11,6 +11,7 @@ use pingora_core::apps::http_app::ServeHttp;
 use pingora_core::protocols::http::ServerSession;
 use tracing::info;
 
+use wanaku_praxis_apis::auth::AuthState;
 use wanaku_praxis_apis::interactions::{InMemoryInteractionStore, InteractionStore};
 use wanaku_praxis_apis::safety::SafetyState;
 use wanaku_praxis_apis::registry::InMemoryRegistry;
@@ -44,12 +45,18 @@ pub struct WanakuManagementService {
     registry: InMemoryRegistry,
     interactions: InMemoryInteractionStore,
     safety: SafetyState,
+    auth: AuthState,
     proxy: Option<crate::proxy::ClassicProxy>,
     ui_path: Option<std::path::PathBuf>,
 }
 
 impl WanakuManagementService {
-    pub fn new(registry: InMemoryRegistry, interactions: InMemoryInteractionStore, safety: SafetyState) -> Self {
+    pub fn new(
+        registry: InMemoryRegistry,
+        interactions: InMemoryInteractionStore,
+        safety: SafetyState,
+        auth: AuthState,
+    ) -> Self {
         let proxy = crate::proxy::ClassicProxy::from_config();
         if proxy.is_some() {
             info!("Classic proxy enabled via WANAKU_CLASSIC_URL");
@@ -64,6 +71,7 @@ impl WanakuManagementService {
             registry,
             interactions,
             safety,
+            auth,
             proxy,
             ui_path,
         }
@@ -77,7 +85,11 @@ impl ServeHttp for WanakuManagementService {
         let method = http_session.req_header().method.as_str().to_owned();
 
         if path == "/healthz" || path == "/health" {
-            return json_ok(&serde_json::json!({"status": "ok"}));
+            let auth_health = self.auth.health_status().await;
+            return json_ok(&serde_json::json!({
+                "status": "ok",
+                "auth": auth_health,
+            }));
         }
 
         if path == "/openapi.json" {
@@ -91,6 +103,12 @@ impl ServeHttp for WanakuManagementService {
 
         if path.starts_with("/admin") {
             return serve_ui(&self.ui_path, &path);
+        }
+
+        if path.starts_with("/api/") {
+            if let Some(err_response) = check_auth(&self.auth, http_session).await {
+                return err_response;
+            }
         }
 
         let mgmt_route = resolve_management_route(&method, &path);
@@ -262,4 +280,49 @@ impl ServeHttp for WanakuManagementService {
 
         json_err(404, "not found")
     }
+}
+
+async fn check_auth(
+    auth: &AuthState,
+    session: &mut ServerSession,
+) -> Option<Response<Vec<u8>>> {
+    if !auth.is_enabled() {
+        return None;
+    }
+
+    let header_value = session
+        .req_header()
+        .headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_owned());
+
+    match auth.validate_authorization_header(header_value.as_deref()).await {
+        Ok(_) => None,
+        Err(e) => {
+            tracing::debug!(error = %e, "management API auth rejected");
+            Some(auth_error_response(&e))
+        }
+    }
+}
+
+#[expect(clippy::expect_used, reason = "valid static error response")]
+fn auth_error_response(error: &wanaku_praxis_apis::auth::TokenError) -> Response<Vec<u8>> {
+    let status = error.status_code();
+    let wrapper = serde_json::json!({
+        "data": null,
+        "error": error.to_string(),
+    });
+    let body = serde_json::to_vec(&wrapper).unwrap_or_default();
+
+    let mut builder = Response::builder()
+        .status(status)
+        .header("Content-Type", "application/json")
+        .header("Content-Length", body.len());
+
+    if let Some(www_auth) = error.www_authenticate() {
+        builder = builder.header("WWW-Authenticate", www_auth);
+    }
+
+    builder.body(body).expect("valid auth error response")
 }
