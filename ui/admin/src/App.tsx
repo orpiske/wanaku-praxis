@@ -12,16 +12,19 @@ function App() {
   const [authReady, setAuthReady] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
     ensureAuthenticated().then(() => {
-      setAuthReady(true);
+      if (!cancelled) {
+        listNamespaces();
+        setAuthReady(true);
+      }
     });
+    return () => { cancelled = true; };
   }, []);
 
   if (!authReady) {
     return <Loading withOverlay />;
   }
-
-  listNamespaces();
 
   return (
     <HeaderContainer

@@ -2,10 +2,11 @@ const OIDC_PROXY_BASE = '/q/oidc';
 const TOKEN_KEY = 'wanaku_auth_token';
 const TOKEN_EXPIRY_KEY = 'wanaku_auth_token_expiry';
 const CODE_VERIFIER_KEY = 'wanaku_pkce_verifier';
-const AUTH_ENABLED_KEY = 'wanaku_auth_enabled';
 
 let cachedToken: string | null = null;
 let cachedExpiry: number = 0;
+let authEnabledChecked = false;
+let authEnabledResult = false;
 
 interface TokenResponse {
   access_token: string;
@@ -37,24 +38,28 @@ async function generateCodeChallenge(verifier: string): Promise<string> {
 }
 
 export async function isAuthEnabled(): Promise<boolean> {
-  const cached = sessionStorage.getItem(AUTH_ENABLED_KEY);
-  if (cached !== null) {
-    return cached === 'true';
+  if (authEnabledChecked) {
+    return authEnabledResult;
   }
 
   try {
     const resp = await fetch(`${window.location.origin}/healthz`);
     if (resp.ok) {
       const data = await resp.json();
-      const enabled = data?.data?.auth !== 'disabled';
-      sessionStorage.setItem(AUTH_ENABLED_KEY, String(enabled));
-      return enabled;
+      console.debug('[wanaku-auth] healthz response:', data);
+      const authField = data?.data?.auth;
+      authEnabledResult = authField !== undefined && authField !== 'disabled';
+      authEnabledChecked = true;
+      console.debug('[wanaku-auth] auth enabled:', authEnabledResult);
+      return authEnabledResult;
     }
-  } catch {
-    // If health check fails, assume no auth
+    console.debug('[wanaku-auth] healthz returned status:', resp.status);
+  } catch (e) {
+    console.debug('[wanaku-auth] healthz fetch failed:', e);
   }
 
-  sessionStorage.setItem(AUTH_ENABLED_KEY, 'false');
+  authEnabledResult = false;
+  authEnabledChecked = true;
   return false;
 }
 
@@ -88,13 +93,15 @@ function storeToken(tokenResponse: TokenResponse): void {
 export function clearToken(): void {
   cachedToken = null;
   cachedExpiry = 0;
+  authEnabledChecked = false;
   sessionStorage.removeItem(TOKEN_KEY);
   sessionStorage.removeItem(TOKEN_EXPIRY_KEY);
   sessionStorage.removeItem(CODE_VERIFIER_KEY);
-  sessionStorage.removeItem(AUTH_ENABLED_KEY);
+  // Clean up stale key from earlier versions
+  sessionStorage.removeItem('wanaku_auth_enabled');
 }
 
-export async function startAuthFlow(): Promise<void> {
+export async function startAuthFlow(): Promise<never> {
   const verifier = await generateCodeVerifier();
   const challenge = await generateCodeChallenge(verifier);
 
@@ -110,6 +117,8 @@ export async function startAuthFlow(): Promise<void> {
   });
 
   window.location.href = `${window.location.origin}${OIDC_PROXY_BASE}/authorize?${params.toString()}`;
+  // Never resolve — browser is navigating to Keycloak
+  return new Promise(() => {});
 }
 
 export async function handleAuthCallback(): Promise<boolean> {
@@ -135,6 +144,9 @@ export async function handleAuthCallback(): Promise<boolean> {
       code_verifier: verifier,
     });
 
+    console.debug('[wanaku-auth] exchanging code at', `${window.location.origin}${OIDC_PROXY_BASE}/token`);
+    console.debug('[wanaku-auth] token request body:', body.toString());
+
     const resp = await fetch(`${window.location.origin}${OIDC_PROXY_BASE}/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -142,11 +154,13 @@ export async function handleAuthCallback(): Promise<boolean> {
     });
 
     if (!resp.ok) {
-      console.error('Token exchange failed:', resp.status);
+      const errorBody = await resp.text().catch(() => '');
+      console.error('[wanaku-auth] Token exchange failed:', resp.status, errorBody);
       return false;
     }
 
     const tokenResponse: TokenResponse = await resp.json();
+    console.debug('[wanaku-auth] token received, expires_in:', tokenResponse.expires_in);
     storeToken(tokenResponse);
     sessionStorage.removeItem(CODE_VERIFIER_KEY);
 
@@ -163,16 +177,21 @@ export async function handleAuthCallback(): Promise<boolean> {
 
 export async function ensureAuthenticated(): Promise<void> {
   const enabled = await isAuthEnabled();
+  console.debug('[wanaku-auth] ensureAuthenticated: enabled =', enabled);
   if (!enabled) {
     return;
   }
 
-  if (await handleAuthCallback()) {
+  const callbackResult = await handleAuthCallback();
+  console.debug('[wanaku-auth] handleAuthCallback result:', callbackResult);
+  if (callbackResult) {
     return;
   }
 
   const token = getAccessToken();
+  console.debug('[wanaku-auth] existing token:', token ? 'present' : 'absent');
   if (!token) {
+    console.debug('[wanaku-auth] starting auth flow');
     await startAuthFlow();
   }
 }

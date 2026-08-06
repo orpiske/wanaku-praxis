@@ -308,7 +308,7 @@ async fn check_auth(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_owned());
 
-    match auth.validate_authorization_header(header_value.as_deref()).await {
+    match auth.validate_management_authorization_header(header_value.as_deref()).await {
         Ok(_) => None,
         Err(e) => {
             tracing::debug!(error = %e, "management API auth rejected");

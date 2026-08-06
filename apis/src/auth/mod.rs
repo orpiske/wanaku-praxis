@@ -148,7 +148,7 @@ impl AuthState {
         &self.mcp_audience
     }
 
-    /// Validate a bearer token and return the subject claim.
+    /// Validate a bearer token for MCP endpoints (requires MCP audience).
     ///
     /// When auth is disabled, returns `Ok("anonymous")`.
     ///
@@ -160,10 +160,25 @@ impl AuthState {
             return Ok("anonymous".into());
         }
         let cache = self.cache.as_ref().ok_or(TokenError::AuthUnavailable)?;
-        cache.validate(token, &self.mcp_audience).await
+        cache.validate(token, Some(&self.mcp_audience)).await
     }
 
-    /// Extract and validate a bearer token from an HTTP Authorization header value.
+    /// Validate a bearer token for the management API (no audience requirement).
+    ///
+    /// When auth is disabled, returns `Ok("anonymous")`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`TokenError`] with an actionable error message.
+    pub async fn validate_management_token(&self, token: &str) -> Result<String, TokenError> {
+        if !self.is_enabled() {
+            return Ok("anonymous".into());
+        }
+        let cache = self.cache.as_ref().ok_or(TokenError::AuthUnavailable)?;
+        cache.validate(token, None).await
+    }
+
+    /// Extract and validate a bearer token for MCP endpoints (requires MCP audience).
     ///
     /// When auth is disabled, returns `Ok("anonymous")` regardless of the header.
     ///
@@ -180,15 +195,29 @@ impl AuthState {
             return Ok("anonymous".into());
         }
 
-        let value = header_value.ok_or(TokenError::MissingToken)?;
+        let token = extract_token_from_header(header_value)?;
+        self.validate_bearer_token(token).await
+    }
 
-        let token = extract_bearer_token(value).ok_or(TokenError::MalformedHeader)?;
-
-        if token.is_empty() {
-            return Err(TokenError::MalformedHeader);
+    /// Extract and validate a bearer token for the management API (no audience requirement).
+    ///
+    /// When auth is disabled, returns `Ok("anonymous")` regardless of the header.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TokenError::MissingToken`] if the header is absent,
+    /// [`TokenError::MalformedHeader`] if not `Bearer <token>`, or
+    /// a validation error from the JWKS cache.
+    pub async fn validate_management_authorization_header(
+        &self,
+        header_value: Option<&str>,
+    ) -> Result<String, TokenError> {
+        if !self.is_enabled() {
+            return Ok("anonymous".into());
         }
 
-        self.validate_bearer_token(token).await
+        let token = extract_token_from_header(header_value)?;
+        self.validate_management_token(token).await
     }
 
     pub async fn health_status(&self) -> &'static str {
@@ -201,6 +230,15 @@ impl AuthState {
             None => "disabled",
         }
     }
+}
+
+fn extract_token_from_header(header_value: Option<&str>) -> Result<&str, TokenError> {
+    let value = header_value.ok_or(TokenError::MissingToken)?;
+    let token = extract_bearer_token(value).ok_or(TokenError::MalformedHeader)?;
+    if token.is_empty() {
+        return Err(TokenError::MalformedHeader);
+    }
+    Ok(token)
 }
 
 /// Extract the token from a `Bearer <token>` header value (case-insensitive per RFC 7235).

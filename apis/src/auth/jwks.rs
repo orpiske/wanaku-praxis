@@ -67,7 +67,7 @@ impl JwksCache {
     pub async fn validate(
         &self,
         token: &str,
-        required_audience: &str,
+        required_audience: Option<&str>,
     ) -> Result<String, TokenError> {
         let header = jsonwebtoken::decode_header(token)
             .map_err(|_| TokenError::InvalidToken)?;
@@ -90,7 +90,7 @@ impl JwksCache {
         &self,
         token: &str,
         kid: &str,
-        required_audience: &str,
+        required_audience: Option<&str>,
     ) -> Result<String, TokenError> {
         let guard = self.inner.read().await;
         let cache = guard.as_ref().ok_or(TokenError::AuthUnavailable)?;
@@ -111,7 +111,7 @@ impl JwksCache {
         &self,
         token: &str,
         kid: &str,
-        required_audience: &str,
+        required_audience: Option<&str>,
         cache: &CacheInner,
     ) -> Result<String, TokenError> {
         let cached = cache.keys.get(kid).ok_or(TokenError::InvalidToken)?;
@@ -122,11 +122,15 @@ impl JwksCache {
         &self,
         token: &str,
         cached: &CachedKey,
-        required_audience: &str,
+        required_audience: Option<&str>,
     ) -> Result<String, TokenError> {
         let mut validation = Validation::new(cached.algorithm);
         validation.set_issuer(&[&self.issuer]);
-        validation.set_audience(&[required_audience]);
+        if let Some(aud) = required_audience {
+            validation.set_audience(&[aud]);
+        } else {
+            validation.validate_aud = false;
+        }
         validation.validate_exp = true;
         validation.validate_nbf = true;
         validation.set_required_spec_claims(&["exp", "sub", "iss"]);
@@ -136,7 +140,7 @@ impl JwksCache {
                 jsonwebtoken::errors::ErrorKind::ExpiredSignature => TokenError::Expired,
                 jsonwebtoken::errors::ErrorKind::InvalidAudience => {
                     TokenError::WrongAudience {
-                        expected: required_audience.to_owned(),
+                        expected: required_audience.unwrap_or("").to_owned(),
                     }
                 }
                 jsonwebtoken::errors::ErrorKind::InvalidIssuer => {

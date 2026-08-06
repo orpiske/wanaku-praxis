@@ -65,7 +65,6 @@ const getBody = <T>(c: Response | Request): Promise<T> => {
         sessionStorage.setItem(REDIRECT_TS_KEY, String(Date.now()));
         clearToken();
         await startAuthFlow();
-        throw new Error('Redirecting to login');
       }
     }
 
