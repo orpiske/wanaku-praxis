@@ -105,6 +105,12 @@ impl ServeHttp for WanakuManagementService {
             return serve_ui(&self.ui_path, &path);
         }
 
+        if path == "/.well-known/oauth-authorization-server"
+            || path.starts_with("/.well-known/oauth-authorization-server/")
+        {
+            return handle_authorization_server_metadata(&self.auth).await;
+        }
+
         if path.starts_with("/api/") {
             if let Some(err_response) = check_auth(&self.auth, http_session).await {
                 return err_response;
@@ -302,6 +308,49 @@ async fn check_auth(
         Err(e) => {
             tracing::debug!(error = %e, "management API auth rejected");
             Some(auth_error_response(&e))
+        }
+    }
+}
+
+async fn handle_authorization_server_metadata(auth: &AuthState) -> Response<Vec<u8>> {
+    if !auth.is_enabled() {
+        return json_err(404, "auth is disabled");
+    }
+
+    let oidc_url = format!(
+        "{}/realms/{}/.well-known/openid-configuration",
+        auth.auth_server().trim_end_matches('/'),
+        auth.realm()
+    );
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to create HTTP client for OIDC discovery");
+            return json_err(503, "failed to fetch authorization server metadata");
+        }
+    };
+
+    match client.get(&oidc_url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            match resp.bytes().await {
+                Ok(body) => raw_json_response(body.to_vec()),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to read OIDC discovery response");
+                    json_err(503, "failed to read authorization server metadata")
+                }
+            }
+        }
+        Ok(resp) => {
+            tracing::warn!(status = %resp.status(), url = %oidc_url, "OIDC discovery returned error");
+            json_err(503, "authorization server returned an error")
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, url = %oidc_url, "OIDC discovery request failed");
+            json_err(503, "authorization server is unreachable")
         }
     }
 }
