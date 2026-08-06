@@ -1,6 +1,7 @@
 use bytes::Bytes;
 use praxis_filter::{FilterAction, FilterError, HttpFilterContext, Rejection};
 use wanaku_praxis_apis::auth::{AuthState, TokenError};
+use wanaku_praxis_apis::registry::{InMemoryRegistry, NamespaceRegistry};
 
 crate::body_filter_boilerplate!(AuthFilter, "wanaku_auth");
 
@@ -38,9 +39,27 @@ impl AuthFilter {
             .get_metadata(crate::namespace::NAMESPACE_METADATA_KEY)
             .unwrap_or("default");
 
+        let registry = ctx.extensions.get::<InMemoryRegistry>();
+        let ns_entry = registry.and_then(|r| r.get_namespace(namespace));
+
         if auth_state.is_public_namespace(namespace) {
+            if ns_entry.as_ref().is_some_and(|e| e.auth_required == Some(true)) {
+                tracing::warn!(
+                    namespace = %namespace,
+                    "namespace has auth_required=true in registry but is listed in \
+                     WANAKU_AUTH_PUBLIC_NAMESPACES — env-level config takes precedence, \
+                     auth is skipped"
+                );
+            }
             tracing::debug!(namespace = %namespace, "skipping auth for public namespace");
             return Ok(FilterAction::Continue);
+        }
+
+        if let Some(ref entry) = ns_entry {
+            if entry.auth_required == Some(false) {
+                tracing::debug!(namespace = %namespace, "skipping auth per namespace config");
+                return Ok(FilterAction::Continue);
+            }
         }
 
         let auth_header = ctx
@@ -51,7 +70,17 @@ impl AuthFilter {
 
         let json_rpc_id = crate::response::extract_json_rpc_id(body);
 
-        match auth_state.validate_authorization_header(auth_header).await {
+        let audience_override = ns_entry
+            .as_ref()
+            .and_then(|e| e.audience.as_deref())
+            .filter(|a| !a.is_empty());
+        let result = if let Some(aud) = audience_override {
+            auth_state.validate_with_audience(auth_header, aud).await
+        } else {
+            auth_state.validate_authorization_header(auth_header).await
+        };
+
+        match result {
             Ok(subject) => {
                 tracing::debug!(subject = %subject, namespace = %namespace, "auth validated");
                 ctx.set_metadata(AUTH_SUB_METADATA_KEY, &subject);

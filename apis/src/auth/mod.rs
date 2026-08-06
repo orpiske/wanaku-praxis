@@ -199,6 +199,27 @@ impl AuthState {
         self.validate_bearer_token(token).await
     }
 
+    /// Extract and validate a bearer token with a custom audience (for per-namespace overrides).
+    ///
+    /// When auth is disabled, returns `Ok("anonymous")` regardless of the header.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`TokenError`] with an actionable error message.
+    pub async fn validate_with_audience(
+        &self,
+        header_value: Option<&str>,
+        audience: &str,
+    ) -> Result<String, TokenError> {
+        if !self.is_enabled() {
+            return Ok("anonymous".into());
+        }
+
+        let token = extract_token_from_header(header_value)?;
+        let cache = self.cache.as_ref().ok_or(TokenError::AuthUnavailable)?;
+        cache.validate(token, Some(audience)).await
+    }
+
     /// Extract and validate a bearer token for the management API (no audience requirement).
     ///
     /// When auth is disabled, returns `Ok("anonymous")` regardless of the header.

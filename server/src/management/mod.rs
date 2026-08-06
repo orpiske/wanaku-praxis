@@ -493,7 +493,9 @@ fn auth_error_response(error: &wanaku_praxis_apis::auth::TokenError) -> Response
     let mut builder = Response::builder()
         .status(status)
         .header("Content-Type", "application/json")
-        .header("Content-Length", body.len());
+        .header("Content-Length", body.len())
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Access-Control-Expose-Headers", "WWW-Authenticate");
 
     if let Some(www_auth) = error.www_authenticate() {
         builder = builder.header("WWW-Authenticate", www_auth);

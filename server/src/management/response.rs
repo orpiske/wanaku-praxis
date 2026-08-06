@@ -7,7 +7,7 @@ pub(super) const MAX_BODY_BYTES: usize = 1_048_576;
 #[expect(clippy::expect_used, reason = "valid static response")]
 pub(super) fn redirect_response(location: &str) -> Response<Vec<u8>> {
     Response::builder()
-        .status(301)
+        .status(302)
         .header("Location", location)
         .body(Vec::new())
         .expect("valid redirect")

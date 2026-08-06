@@ -55,11 +55,10 @@ export async function isAuthEnabled(): Promise<boolean> {
     }
     console.debug('[wanaku-auth] healthz returned status:', resp.status);
   } catch (e) {
-    console.debug('[wanaku-auth] healthz fetch failed:', e);
+    console.debug('[wanaku-auth] healthz fetch failed, will retry next call:', e);
   }
 
-  authEnabledResult = false;
-  authEnabledChecked = true;
+  // Don't cache failures — allow retry on next call
   return false;
 }
 

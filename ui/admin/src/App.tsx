@@ -15,7 +15,7 @@ function App() {
     let cancelled = false;
     ensureAuthenticated().then(() => {
       if (!cancelled) {
-        listNamespaces();
+        listNamespaces().catch(() => {});
         setAuthReady(true);
       }
     });
