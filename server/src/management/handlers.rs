@@ -558,3 +558,418 @@ pub(super) async fn handle_chat_completions(ollama_proxy: &str, body: &str) -> R
         .body(response_body)
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wanaku_praxis_apis::registry::InMemoryRegistry;
+    use wanaku_praxis_apis::safety::SafetyState;
+
+    fn status_of(resp: &Response<Vec<u8>>) -> u16 {
+        resp.status().as_u16()
+    }
+
+    fn response_data(resp: &Response<Vec<u8>>) -> serde_json::Value {
+        let body: serde_json::Value = serde_json::from_slice(resp.body()).unwrap_or_default();
+        body.get("data").cloned().unwrap_or(serde_json::Value::Null)
+    }
+
+    fn response_error(resp: &Response<Vec<u8>>) -> Option<String> {
+        let body: serde_json::Value = serde_json::from_slice(resp.body()).unwrap_or_default();
+        body.get("error")
+            .and_then(serde_json::Value::as_str)
+            .map(String::from)
+    }
+
+    const TOOL_JSON: &str = r#"{
+        "name": "test-tool",
+        "description": "A test tool",
+        "uri": "echo-tool://echo",
+        "type": "echo-tool",
+        "input_schema": {"type": "object", "properties": {"message": {"type": "string"}}}
+    }"#;
+
+    const RESOURCE_JSON: &str = r#"{
+        "name": "test-resource",
+        "description": "A test resource",
+        "location": "/tmp/test.txt",
+        "type": "file",
+        "mime_type": "text/plain"
+    }"#;
+
+    const PROMPT_JSON: &str = r#"{
+        "name": "test-prompt",
+        "description": "A test prompt",
+        "arguments": [],
+        "messages": []
+    }"#;
+
+    const NAMESPACE_JSON: &str = r#"{
+        "name": "test-ns",
+        "path": "/test-ns/mcp"
+    }"#;
+
+    const SERVICE_JSON: &str = r#"{
+        "name": "echo-tool",
+        "address": "localhost:9191",
+        "service_type": "tool-invoker"
+    }"#;
+
+    // ── Tool handler tests ──────────────────────────────────────────
+
+    #[test]
+    fn tool_create_and_list() {
+        let registry = InMemoryRegistry::new();
+        let resp = handle_tool_create(&registry, TOOL_JSON);
+        assert_eq!(status_of(&resp), 200);
+
+        let resp = handle_tool_list(&registry);
+        assert_eq!(status_of(&resp), 200);
+
+        let data = response_data(&resp);
+        let arr = data.as_array();
+        assert!(arr.is_some());
+        assert_eq!(arr.map(Vec::len), Some(1));
+        assert_eq!(data[0]["name"].as_str(), Some("test-tool"));
+    }
+
+    #[test]
+    fn tool_create_and_get_by_name() {
+        let registry = InMemoryRegistry::new();
+        handle_tool_create(&registry, TOOL_JSON);
+
+        let resp = handle_tool_get(&registry, "test-tool");
+        assert_eq!(status_of(&resp), 200);
+
+        let data = response_data(&resp);
+        assert_eq!(data["name"].as_str(), Some("test-tool"));
+        assert_eq!(data["uri"].as_str(), Some("echo-tool://echo"));
+    }
+
+    #[test]
+    fn tool_create_defaults_namespace() {
+        let registry = InMemoryRegistry::new();
+        let resp = handle_tool_create(&registry, TOOL_JSON);
+        assert_eq!(status_of(&resp), 200);
+
+        let data = response_data(&resp);
+        assert_eq!(data["namespace"].as_str(), Some("default"));
+    }
+
+    #[test]
+    fn tool_get_nonexistent_returns_404() {
+        let registry = InMemoryRegistry::new();
+        let resp = handle_tool_get(&registry, "no-such-tool");
+        assert_eq!(status_of(&resp), 404);
+        assert!(response_error(&resp).is_some());
+    }
+
+    #[test]
+    fn tool_delete_existing() {
+        let registry = InMemoryRegistry::new();
+        handle_tool_create(&registry, TOOL_JSON);
+
+        let resp = handle_tool_delete(&registry, "test-tool");
+        assert_eq!(status_of(&resp), 200);
+
+        let resp = handle_tool_get(&registry, "test-tool");
+        assert_eq!(status_of(&resp), 404);
+    }
+
+    #[test]
+    fn tool_delete_nonexistent_returns_404() {
+        let registry = InMemoryRegistry::new();
+        let resp = handle_tool_delete(&registry, "no-such-tool");
+        assert_eq!(status_of(&resp), 404);
+    }
+
+    #[test]
+    fn tool_create_invalid_json_returns_400() {
+        let registry = InMemoryRegistry::new();
+        let resp = handle_tool_create(&registry, "not valid json{{{");
+        assert_eq!(status_of(&resp), 400);
+        assert!(response_error(&resp).is_some());
+    }
+
+    // ── Resource handler tests ──────────────────────────────────────
+
+    #[test]
+    fn resource_create_and_list() {
+        let registry = InMemoryRegistry::new();
+        let resp = handle_resource_create(&registry, RESOURCE_JSON);
+        assert_eq!(status_of(&resp), 200);
+
+        let resp = handle_resource_list(&registry);
+        assert_eq!(status_of(&resp), 200);
+
+        let data = response_data(&resp);
+        let arr = data.as_array();
+        assert!(arr.is_some());
+        assert_eq!(arr.map(Vec::len), Some(1));
+        assert_eq!(data[0]["name"].as_str(), Some("test-resource"));
+    }
+
+    #[test]
+    fn resource_create_and_get_by_name() {
+        let registry = InMemoryRegistry::new();
+        handle_resource_create(&registry, RESOURCE_JSON);
+
+        let resp = handle_resource_get(&registry, "test-resource");
+        assert_eq!(status_of(&resp), 200);
+
+        let data = response_data(&resp);
+        assert_eq!(data["name"].as_str(), Some("test-resource"));
+        assert_eq!(data["location"].as_str(), Some("/tmp/test.txt"));
+    }
+
+    #[test]
+    fn resource_create_defaults_namespace() {
+        let registry = InMemoryRegistry::new();
+        let resp = handle_resource_create(&registry, RESOURCE_JSON);
+        assert_eq!(status_of(&resp), 200);
+
+        let data = response_data(&resp);
+        assert_eq!(data["namespace"].as_str(), Some("default"));
+    }
+
+    #[test]
+    fn resource_delete_existing() {
+        let registry = InMemoryRegistry::new();
+        handle_resource_create(&registry, RESOURCE_JSON);
+
+        let resp = handle_resource_delete(&registry, "test-resource");
+        assert_eq!(status_of(&resp), 200);
+
+        let resp = handle_resource_get(&registry, "test-resource");
+        assert_eq!(status_of(&resp), 404);
+    }
+
+    #[test]
+    fn resource_delete_nonexistent_returns_404() {
+        let registry = InMemoryRegistry::new();
+        let resp = handle_resource_delete(&registry, "no-such-resource");
+        assert_eq!(status_of(&resp), 404);
+    }
+
+    #[test]
+    fn resource_create_invalid_json_returns_400() {
+        let registry = InMemoryRegistry::new();
+        let resp = handle_resource_create(&registry, "{{broken");
+        assert_eq!(status_of(&resp), 400);
+    }
+
+    // ── Prompt handler tests ────────────────────────────────────────
+
+    #[test]
+    fn prompt_create_and_get() {
+        let registry = InMemoryRegistry::new();
+        let resp = handle_prompt_create(&registry, PROMPT_JSON);
+        assert_eq!(status_of(&resp), 200);
+
+        let resp = handle_prompt_get(&registry, "test-prompt");
+        assert_eq!(status_of(&resp), 200);
+
+        let data = response_data(&resp);
+        assert_eq!(data["name"].as_str(), Some("test-prompt"));
+        assert_eq!(data["description"].as_str(), Some("A test prompt"));
+    }
+
+    #[test]
+    fn prompt_delete_nonexistent_returns_404() {
+        let registry = InMemoryRegistry::new();
+        let resp = handle_prompt_delete(&registry, "no-such-prompt");
+        assert_eq!(status_of(&resp), 404);
+    }
+
+    #[test]
+    fn prompt_create_invalid_json_returns_400() {
+        let registry = InMemoryRegistry::new();
+        let resp = handle_prompt_create(&registry, "[]");
+        assert_eq!(status_of(&resp), 400);
+    }
+
+    // ── Namespace handler tests ─────────────────────────────────────
+
+    #[test]
+    fn namespace_create_and_get() {
+        let registry = InMemoryRegistry::new();
+        let resp = handle_namespace_create(&registry, NAMESPACE_JSON);
+        assert_eq!(status_of(&resp), 200);
+
+        let resp = handle_namespace_get(&registry, "test-ns");
+        assert_eq!(status_of(&resp), 200);
+
+        let data = response_data(&resp);
+        assert_eq!(data["name"].as_str(), Some("test-ns"));
+        assert_eq!(data["path"].as_str(), Some("/test-ns/mcp"));
+    }
+
+    #[test]
+    fn namespace_update_overrides_name_from_path() {
+        let registry = InMemoryRegistry::new();
+        handle_namespace_create(&registry, NAMESPACE_JSON);
+
+        let update_body = r#"{"name": "ignored", "path": "/updated/mcp"}"#;
+        let resp = handle_namespace_update(&registry, "test-ns", update_body);
+        assert_eq!(status_of(&resp), 200);
+
+        let data = response_data(&resp);
+        assert_eq!(data["name"].as_str(), Some("test-ns"));
+        assert_eq!(data["path"].as_str(), Some("/updated/mcp"));
+    }
+
+    #[test]
+    fn namespace_delete_nonexistent_returns_404() {
+        let registry = InMemoryRegistry::new();
+        let resp = handle_namespace_delete(&registry, "no-such-ns");
+        assert_eq!(status_of(&resp), 404);
+    }
+
+    // ── Service handler tests ───────────────────────────────────────
+
+    #[test]
+    fn service_create_and_list() {
+        let registry = InMemoryRegistry::new();
+        let resp = handle_service_create(&registry, SERVICE_JSON);
+        assert_eq!(status_of(&resp), 200);
+
+        let resp = handle_service_list(&registry);
+        assert_eq!(status_of(&resp), 200);
+
+        let data = response_data(&resp);
+        let arr = data.as_array();
+        assert!(arr.is_some());
+        assert_eq!(arr.map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn service_get_nonexistent_returns_404() {
+        let registry = InMemoryRegistry::new();
+        let resp = handle_service_get(&registry, "no-such-service");
+        assert_eq!(status_of(&resp), 404);
+    }
+
+    #[test]
+    fn service_delete_existing() {
+        let registry = InMemoryRegistry::new();
+        handle_service_create(&registry, SERVICE_JSON);
+
+        let resp = handle_service_delete(&registry, "echo-tool");
+        assert_eq!(status_of(&resp), 200);
+
+        let resp = handle_service_get(&registry, "echo-tool");
+        assert_eq!(status_of(&resp), 404);
+    }
+
+    // ── Statistics handler tests ────────────────────────────────────
+
+    #[test]
+    fn statistics_empty_registry() {
+        let registry = InMemoryRegistry::new();
+        let resp = handle_statistics(&registry);
+        assert_eq!(status_of(&resp), 200);
+
+        let data = response_data(&resp);
+        assert_eq!(data["toolsCount"].as_i64(), Some(0));
+        assert_eq!(data["resourcesCount"].as_i64(), Some(0));
+        assert_eq!(data["promptsCount"].as_i64(), Some(0));
+        assert_eq!(data["forwardsCount"].as_i64(), Some(0));
+    }
+
+    #[test]
+    fn statistics_reflects_registered_entries() {
+        let registry = InMemoryRegistry::new();
+        handle_tool_create(&registry, TOOL_JSON);
+        handle_resource_create(&registry, RESOURCE_JSON);
+
+        let resp = handle_statistics(&registry);
+        let data = response_data(&resp);
+        assert_eq!(data["toolsCount"].as_i64(), Some(1));
+        assert_eq!(data["resourcesCount"].as_i64(), Some(1));
+        assert_eq!(data["promptsCount"].as_i64(), Some(0));
+    }
+
+    // ── Safety handler tests ────────────────────────────────────────
+
+    #[test]
+    fn safety_get_returns_null_when_unconfigured() {
+        let state = SafetyState::new();
+        let resp = handle_safety_get(&state);
+        assert_eq!(status_of(&resp), 200);
+
+        let data = response_data(&resp);
+        assert!(data.is_null());
+    }
+
+    #[test]
+    fn safety_update_and_get() {
+        let state = SafetyState::new();
+        let body = r#"{
+            "llm_url": "http://localhost:11434/v1",
+            "llm_model": "llama3.2",
+            "llm_api_key": "",
+            "red_action": "block",
+            "yellow_action": "warn"
+        }"#;
+        let resp = handle_safety_update(&state, body);
+        assert_eq!(status_of(&resp), 200);
+
+        let resp = handle_safety_get(&state);
+        let data = response_data(&resp);
+        assert_eq!(data["llm_model"].as_str(), Some("llama3.2"));
+        assert_eq!(data["red_action"].as_str(), Some("block"));
+    }
+
+    #[test]
+    fn safety_delete_clears_config() {
+        let state = SafetyState::new();
+        let body = r#"{
+            "llm_url": "http://localhost:11434/v1",
+            "llm_model": "test",
+            "llm_api_key": "",
+            "red_action": "log",
+            "yellow_action": "log"
+        }"#;
+        handle_safety_update(&state, body);
+        handle_safety_delete(&state);
+
+        let resp = handle_safety_get(&state);
+        let data = response_data(&resp);
+        assert!(data.is_null());
+    }
+
+    #[test]
+    fn safety_update_invalid_json_returns_400() {
+        let state = SafetyState::new();
+        let resp = handle_safety_update(&state, "not json");
+        assert_eq!(status_of(&resp), 400);
+    }
+
+    // ── Capability handler tests ────────────────────────────────────
+
+    #[test]
+    fn capability_state_returns_empty_map() {
+        let resp = handle_capability_state();
+        assert_eq!(status_of(&resp), 200);
+
+        let data = response_data(&resp);
+        assert!(data.is_object());
+        assert_eq!(data.as_object().map(|m| m.len()), Some(0));
+    }
+
+    #[test]
+    fn capability_list_reflects_services() {
+        let registry = InMemoryRegistry::new();
+        handle_service_create(&registry, SERVICE_JSON);
+
+        let resp = handle_capability_list(&registry);
+        assert_eq!(status_of(&resp), 200);
+
+        let data = response_data(&resp);
+        let arr = data.as_array();
+        assert_eq!(arr.map(Vec::len), Some(1));
+        assert_eq!(data[0]["serviceName"].as_str(), Some("echo-tool"));
+        assert_eq!(data[0]["host"].as_str(), Some("localhost"));
+        assert_eq!(data[0]["port"].as_u64(), Some(9191));
+    }
+}
