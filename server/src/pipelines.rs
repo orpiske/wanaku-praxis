@@ -6,6 +6,7 @@ use praxis_filter::{FilterPipeline, FilterRegistry, PipelineExtension, RequestEx
 use praxis_protocol::ListenerPipelines;
 use tracing::info;
 
+use wanaku_praxis_apis::auth::AuthState;
 use wanaku_praxis_apis::grpc::GrpcPool;
 use wanaku_praxis_apis::interactions::InMemoryInteractionStore;
 use wanaku_praxis_apis::registry::InMemoryRegistry;
@@ -55,6 +56,17 @@ impl PipelineExtension for SafetyStateExtension {
     }
 }
 
+/// Pipeline extension that injects the auth state into each request.
+struct AuthStateExtension {
+    state: AuthState,
+}
+
+impl PipelineExtension for AuthStateExtension {
+    fn prepare(&self, extensions: &mut RequestExtensions) {
+        extensions.insert(self.state.clone());
+    }
+}
+
 /// Build filter pipelines for all listeners, injecting wanaku extensions.
 ///
 /// # Errors
@@ -69,6 +81,7 @@ pub fn resolve_pipelines(
     grpc_pool: GrpcPool,
     interaction_store: InMemoryInteractionStore,
     safety_state: SafetyState,
+    auth_state: AuthState,
 ) -> Result<ListenerPipelines, Box<dyn std::error::Error + Send + Sync>> {
     let chains: HashMap<&str, &[_]> = config
         .filter_chains
@@ -117,6 +130,9 @@ pub fn resolve_pipelines(
         }));
         pipeline.add_pipeline_extension(Box::new(SafetyStateExtension {
             state: safety_state.clone(),
+        }));
+        pipeline.add_pipeline_extension(Box::new(AuthStateExtension {
+            state: auth_state.clone(),
         }));
         pipeline.apply_insecure_options(&config.insecure_options);
 

@@ -61,6 +61,7 @@ macro_rules! body_filter_boilerplate {
 
 pub(crate) use body_filter_boilerplate;
 
+pub mod auth;
 pub mod intercept;
 pub mod mcp_init;
 pub mod namespace;
@@ -73,6 +74,7 @@ pub mod safety;
 pub mod tool_call;
 pub mod tool_list;
 
+pub use auth::AuthFilter;
 pub use intercept::InterceptFilter;
 pub use mcp_init::McpInitFilter;
 pub use namespace::NamespaceFilter;

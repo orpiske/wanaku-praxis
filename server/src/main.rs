@@ -10,6 +10,7 @@ use praxis_protocol::Protocol as _;
 use praxis_protocol::http::PingoraHttp;
 use tracing::info;
 
+use wanaku_praxis_apis::auth::AuthState;
 use wanaku_praxis_apis::grpc::GrpcPool;
 use wanaku_praxis_apis::interactions::InMemoryInteractionStore;
 use wanaku_praxis_apis::persistence::FilePersistence;
@@ -46,6 +47,8 @@ fn main() {
         info!("safety classifier configured from environment variables");
         safety_state.configure(env_cfg);
     }
+    let auth_state = build_auth_state();
+
     let grpc_pool = GrpcPool::new();
     let interaction_store = InMemoryInteractionStore::new(1000);
 
@@ -67,6 +70,7 @@ fn main() {
         grpc_pool,
         interaction_store,
         safety_state,
+        auth_state,
     )
     .unwrap_or_else(|e| fatal(&e));
 
@@ -192,6 +196,47 @@ fn load_wanaku_config(path: &str, registry: &InMemoryRegistry, safety_state: &Sa
         if let Err(e) = handle.join() {
             tracing::error!("forward discovery thread panicked: {e:?}");
         }
+    }
+}
+
+fn build_auth_state() -> AuthState {
+    let env = &wanaku_praxis_apis::config::ENV;
+    let auth_env = match &env.auth {
+        Some(a) => a,
+        None => {
+            info!("auth disabled (WANAKU_HTTP_AUTH not set to 'keycloak')");
+            return AuthState::disabled();
+        }
+    };
+
+    let state = AuthState::from_config(auth_env)
+        .unwrap_or_else(|e| fatal(&e));
+
+    let timeout = std::time::Duration::from_secs(auth_env.startup_timeout_secs);
+    let bootstrap_state = state.clone();
+
+    let handle = std::thread::spawn(move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                format!("failed to create auth bootstrap runtime: {e}").into()
+            })?;
+
+        rt.block_on(async {
+            bootstrap_state.bootstrap(timeout).await
+        })?;
+
+        Ok(())
+    });
+
+    match handle.join() {
+        Ok(Ok(())) => {
+            info!("auth enabled (keycloak)");
+            state
+        }
+        Ok(Err(e)) => fatal(&e),
+        Err(e) => fatal(&format_args!("auth bootstrap thread panicked: {e:?}")),
     }
 }
 

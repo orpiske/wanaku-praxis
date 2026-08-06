@@ -38,6 +38,10 @@ fn register_wanaku_filters(registry: &mut praxis_filter::FilterRegistry) {
     );
     praxis_filter::register_filters!(
         @register registry,
+        http "wanaku_auth" => wanaku_praxis_filters::AuthFilter::from_config
+    );
+    praxis_filter::register_filters!(
+        @register registry,
         http "wanaku_mcp_init" => wanaku_praxis_filters::McpInitFilter::from_config
     );
     praxis_filter::register_filters!(
