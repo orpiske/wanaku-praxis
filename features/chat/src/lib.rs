@@ -16,6 +16,7 @@ pub struct ChatFeature {
     inference_base_url: String,
     upstream_host: Option<String>,
     api_key: String,
+    client: reqwest::Client,
 }
 
 impl ChatFeature {
@@ -30,6 +31,7 @@ impl ChatFeature {
             inference_base_url: format!("http://127.0.0.1:{inference_proxy_port}{path_prefix}"),
             upstream_host,
             api_key,
+            client: reqwest::Client::new(),
         }
     }
 }
@@ -61,6 +63,7 @@ impl Feature for ChatFeature {
             ChatRoute::ListLlms => handle_chat_list_llms(),
             ChatRoute::ListModels(_) => {
                 handle_chat_list_models(
+                    &self.client,
                     &self.inference_base_url,
                     self.upstream_host.as_deref(),
                     &self.api_key,
@@ -69,6 +72,7 @@ impl Feature for ChatFeature {
             }
             ChatRoute::Completions => {
                 handle_chat_completions(
+                    &self.client,
                     &self.inference_base_url,
                     self.upstream_host.as_deref(),
                     &self.api_key,
