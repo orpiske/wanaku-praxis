@@ -11,6 +11,7 @@ members = [
     "server",
 ]
 exclude = [
+    "actions/assembly-filter",
     "actions/safety-block",
     "actions/safety-warn",
 ]
