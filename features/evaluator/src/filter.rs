@@ -24,7 +24,10 @@ impl EvaluatorFilter {
 
         let state = match ctx.extensions.get::<EvaluatorState>() {
             Some(s) => s.clone(),
-            None => return Ok(FilterAction::Continue),
+            None => {
+                tracing::debug!("EvaluatorState not in extensions, skipping");
+                return Ok(FilterAction::Continue);
+            }
         };
 
         let namespace = ctx
@@ -32,9 +35,20 @@ impl EvaluatorFilter {
             .unwrap_or(wanaku_praxis_apis::registry::DEFAULT_NAMESPACE)
             .to_owned();
 
+        let loaded = state.list_evaluators();
+        tracing::debug!(
+            method = %method,
+            namespace = %namespace,
+            evaluator_count = loaded.len(),
+            "evaluator filter checking triggers"
+        );
+
         let evaluator = match state.find_matching(&method, &namespace) {
             Some(e) => e,
-            None => return Ok(FilterAction::Continue),
+            None => {
+                tracing::debug!(method = %method, namespace = %namespace, "no evaluator matches");
+                return Ok(FilterAction::Continue);
+            }
         };
 
         tracing::info!(
@@ -112,8 +126,8 @@ impl EvaluatorFilter {
         }
 
         let wasm_path = match &action_ref {
-            ActionRef::Wasm(w) => &w.path,
-            ActionRef::Pass(_) => return Ok(FilterAction::Continue),
+            ActionRef::Wasm { path } => path,
+            ActionRef::Pass => return Ok(FilterAction::Continue),
         };
 
         let compiled = match state.get_compiled(wasm_path) {

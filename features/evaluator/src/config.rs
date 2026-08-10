@@ -56,38 +56,79 @@ pub enum LlmOperation {
     Augment,
 }
 
-/// Reference to an action: either a WASM file path or "pass" (no-op).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
+/// Reference to an action: either "pass" (no-op) or a WASM file path.
+/// Accepts both string `"pass"` and object `{"path": "/path/to/action.wasm"}`.
+#[derive(Debug, Clone)]
 pub enum ActionRef {
-    Pass(PassAction),
-    Wasm(WasmAction),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PassAction {
-    // Matches the literal string "pass" in YAML
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WasmAction {
-    pub path: PathBuf,
+    Pass,
+    Wasm { path: PathBuf },
 }
 
 impl ActionRef {
     #[must_use]
     pub fn is_pass(&self) -> bool {
-        matches!(self, Self::Pass(_))
+        matches!(self, Self::Pass)
     }
 
     pub fn parse(s: &str) -> Self {
         if s == "pass" {
-            Self::Pass(PassAction {})
+            Self::Pass
         } else {
-            Self::Wasm(WasmAction {
+            Self::Wasm {
                 path: PathBuf::from(s),
-            })
+            }
         }
+    }
+}
+
+impl Serialize for ActionRef {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Pass => serializer.serialize_str("pass"),
+            Self::Wasm { path } => {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("path", path)?;
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ActionRef {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de;
+
+        struct ActionRefVisitor;
+
+        impl<'de> de::Visitor<'de> for ActionRefVisitor {
+            type Value = ActionRef;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str(r#""pass" or {"path": "/path/to/action.wasm"}"#)
+            }
+
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<ActionRef, E> {
+                Ok(ActionRef::parse(value))
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<ActionRef, M::Error> {
+                let mut path: Option<PathBuf> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    if key == "path" {
+                        path = Some(map.next_value()?);
+                    } else {
+                        let _: serde::de::IgnoredAny = map.next_value()?;
+                    }
+                }
+                match path {
+                    Some(p) => Ok(ActionRef::Wasm { path: p }),
+                    None => Err(de::Error::missing_field("path")),
+                }
+            }
+        }
+
+        deserializer.deserialize_any(ActionRefVisitor)
     }
 }
 
