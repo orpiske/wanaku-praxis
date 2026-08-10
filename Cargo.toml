@@ -10,6 +10,10 @@ members = [
     "filters",
     "server",
 ]
+exclude = [
+    "actions/safety-block",
+    "actions/safety-warn",
+]
 
 [workspace.package]
 version = "0.3.0"
