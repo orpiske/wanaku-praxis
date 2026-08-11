@@ -116,17 +116,5 @@ impl EvaluatorState {
 }
 
 fn collect_wasm_paths(def: &EvaluatorDef) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-
-    for action_ref in def.rules.values() {
-        if let crate::config::ActionRef::Wasm { path } = action_ref {
-            paths.push(path.clone());
-        }
-    }
-
-    if let Some(crate::config::ActionRef::Wasm { path }) = &def.action {
-        paths.push(path.clone());
-    }
-
-    paths
+    vec![def.processor.path.clone()]
 }

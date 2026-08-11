@@ -7,6 +7,7 @@ use wanaku_praxis_apis::registry::ToolEntry;
 use crate::config::LlmDef;
 
 /// Execute the LLM operation and return the raw result string.
+/// The processor WASM module is responsible for parsing and acting on this.
 pub async fn run_llm_operation(
     llm_def: &LlmDef,
     method: &str,
@@ -19,35 +20,7 @@ pub async fn run_llm_operation(
 
     let user_prompt = build_context_prompt(method, tool_name, arguments, tools, history);
 
-    let content = client.chat(&llm_def.prompt, &user_prompt).await?;
-
-    tracing::debug!(llm_response = %content, "evaluator LLM response");
-
-    Some(content)
-}
-
-/// Resolve the rule key from an LLM result for classify operations.
-/// Tries to extract the classification label from the LLM response.
-pub fn extract_classification(content: &str, labels: &[String]) -> String {
-    let stripped = llm::strip_markdown_fences(content);
-
-    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(stripped) {
-        if let Some(level) = parsed.get("level").and_then(serde_json::Value::as_str) {
-            let lower = level.trim().to_lowercase();
-            if labels.iter().any(|l| l == &lower) {
-                return lower;
-            }
-        }
-    }
-
-    let lower = stripped.to_lowercase();
-    for label in labels {
-        if lower.contains(label.as_str()) {
-            return label.clone();
-        }
-    }
-
-    labels.first().cloned().unwrap_or_default()
+    client.chat(&llm_def.prompt, &user_prompt).await
 }
 
 fn build_context_prompt(

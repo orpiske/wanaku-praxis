@@ -6,7 +6,7 @@ use wanaku_praxis_apis::interactions::{InMemoryInteractionStore, InteractionStor
 use wanaku_praxis_apis::registry::{InMemoryRegistry, ToolRegistry};
 
 use crate::action::ActionResult;
-use crate::config::{ActionRef, ErrorPolicy, LlmOperation};
+use crate::config::{ErrorPolicy, LlmOperation};
 use crate::state::EvaluatorState;
 
 wanaku_praxis_filters::body_filter_boilerplate!(EvaluatorFilter, "wanaku_evaluator");
@@ -24,10 +24,7 @@ impl EvaluatorFilter {
 
         let state = match ctx.extensions.get::<EvaluatorState>() {
             Some(s) => s.clone(),
-            None => {
-                tracing::debug!("EvaluatorState not in extensions, skipping");
-                return Ok(FilterAction::Continue);
-            }
+            None => return Ok(FilterAction::Continue),
         };
 
         let namespace = ctx
@@ -35,20 +32,9 @@ impl EvaluatorFilter {
             .unwrap_or(wanaku_praxis_apis::registry::DEFAULT_NAMESPACE)
             .to_owned();
 
-        let loaded = state.list_evaluators();
-        tracing::debug!(
-            method = %method,
-            namespace = %namespace,
-            evaluator_count = loaded.len(),
-            "evaluator filter checking triggers"
-        );
-
         let evaluator = match state.find_matching(&method, &namespace) {
             Some(e) => e,
-            None => {
-                tracing::debug!(method = %method, namespace = %namespace, "no evaluator matches");
-                return Ok(FilterAction::Continue);
-            }
+            None => return Ok(FilterAction::Continue),
         };
 
         tracing::info!(
@@ -100,50 +86,26 @@ impl EvaluatorFilter {
         .await
         .unwrap_or_default();
 
-        let action_ref = match evaluator.llm.operation {
-            LlmOperation::Classify => {
-                let label =
-                    crate::llm_op::extract_classification(&llm_result, &evaluator.llm.labels);
-                tracing::info!(
-                    evaluator = %evaluator.name,
-                    classification = %label,
-                    "LLM classification result"
-                );
-                evaluator
-                    .rules
-                    .get(&label)
-                    .cloned()
-                    .unwrap_or_else(|| ActionRef::parse("pass"))
-            }
-            LlmOperation::Filter | LlmOperation::Augment => evaluator
-                .action
-                .clone()
-                .unwrap_or_else(|| ActionRef::parse("pass")),
-        };
+        tracing::info!(
+            evaluator = %evaluator.name,
+            llm_result = %llm_result,
+            "LLM operation result"
+        );
 
-        if action_ref.is_pass() {
-            return Ok(FilterAction::Continue);
-        }
-
-        let wasm_path = match &action_ref {
-            ActionRef::Wasm { path } => path,
-            ActionRef::Pass => return Ok(FilterAction::Continue),
-        };
-
-        let compiled = match state.get_compiled(wasm_path) {
+        let compiled = match state.get_compiled(&evaluator.processor.path) {
             Some(c) => c,
             None => {
                 tracing::warn!(
                     evaluator = %evaluator.name,
-                    path = %wasm_path.display(),
-                    "WASM module not found or not compiled"
+                    path = %evaluator.processor.path.display(),
+                    "WASM processor not found or not compiled"
                 );
                 return match evaluator.on_error {
                     ErrorPolicy::Continue => Ok(FilterAction::Continue),
                     ErrorPolicy::Block => Ok(wanaku_praxis_filters::response::json_rpc_error(
                         &wanaku_praxis_filters::response::extract_json_rpc_id(body),
                         -32603,
-                        "evaluator action module not available",
+                        "evaluator processor module not available",
                     )),
                 };
             }
@@ -163,7 +125,7 @@ impl EvaluatorFilter {
         tracing::info!(
             evaluator = %evaluator.name,
             action = ?result,
-            "evaluator action result"
+            "processor result"
         );
 
         dispatch_action(ctx, body, result, &method, &evaluator.name)
@@ -199,7 +161,7 @@ fn dispatch_action(
         }
         ActionResult::FilterTools(tool_names) => {
             if method != "tools/list" {
-                tracing::warn!(evaluator = %evaluator_name, "filter_tools called on non-tools/list request, ignoring");
+                tracing::warn!(evaluator = %evaluator_name, "filter_tools called on non-tools/list, ignoring");
                 return Ok(FilterAction::Continue);
             }
 
@@ -222,9 +184,8 @@ fn dispatch_action(
                 "id": json_rpc_id,
                 "result": { "tools": mcp_tools }
             });
-            let response_body = Bytes::from(response.to_string());
             Ok(FilterAction::Reject(
-                wanaku_praxis_filters::response::json_response(response_body),
+                wanaku_praxis_filters::response::json_response(Bytes::from(response.to_string())),
             ))
         }
         ActionResult::SetMetadata(key, value) => {

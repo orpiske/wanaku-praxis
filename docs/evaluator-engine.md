@@ -8,30 +8,30 @@ You write the logic in JavaScript or Rust. The engine compiles it to WASM and ru
 
 ## YAML Configuration
 
-Evaluators live in `wanaku.yaml` or get pushed via the management API. Each evaluator has five parts:
+Evaluators live in `wanaku.yaml` or get pushed via the management API. Each evaluator has four parts:
 
 ```yaml
 evaluators:
-  - name: "safety-gate"               # Unique identifier
-    trigger:                          # When to run
-      method: "tools/call"            # MCP method (tools/call, tools/list, etc.)
+  - name: "safety-gate"
+    trigger:
+      method: "tools/call"
       namespace: "production"         # Optional: only this namespace
-      binding: "conv-12345"           # Optional: only this conversation ID
-    llm:                              # LLM operation
-      operation: classify             # classify | filter | augment
-      labels: ["green", "yellow", "red"]  # For classify: possible outputs
-      prompt: "You are a safety classifier..."
+    llm:
+      operation: classify
+      prompt: |
+        You are a safety classifier. Classify this tool call as:
+        - green: safe (read-only, low impact)
+        - yellow: elevated (writes, config changes)
+        - red: dangerous (database restarts, production deploys)
+        Respond with ONLY JSON: {"level": "green|yellow|red", "reason": "brief"}
       model: "llama3.2"
       url: "http://localhost:11434/v1"
       api_key: ""                     # Optional bearer token
-    rules:                            # For classify: label → action map
-      green: "pass"
-      yellow: "pass"
-      red: {path: "/wasm/safety-block.wasm"}
-    action:                           # For filter/augment: single action
-      path: "/wasm/assembly-filter.wasm"
-    on_error: continue                # continue | block (default: continue)
+    processor: {path: "/wasm/safety-gate.wasm"}
+    on_error: continue
 ```
+
+The key insight: **the processor WASM script handles all the decision logic.** The engine runs the LLM, passes the raw result to the processor, and the processor decides what to do (block, warn, pass, filter tools). No intermediate rules layer — the prompt defines what the LLM outputs, and the processor code interprets it.
 
 ### Trigger Fields
 
@@ -39,16 +39,14 @@ evaluators:
 |-------|------|---------|
 | `method` | string | MCP method to match (e.g., `tools/call`, `tools/list`, `resources/read`) |
 | `namespace` | string | Optional. Only trigger for this namespace (extracted from URL path `/finance/mcp` → `finance`) |
-| `binding` | string | Optional. Only trigger for requests with this conversation ID |
 
-**Namespace binding pattern:** Use `PUT /api/v1/evaluators/namespaces/{namespace}` to bind a namespace to a conversation ID. Then set `binding` to that conversation ID. This lets you create per-conversation tool catalogs.
+**Namespace binding:** Use `PUT /api/v1/evaluators/namespaces/{namespace}` to bind a namespace to a conversation ID. The evaluator will use that conversation's history as context for the LLM.
 
 ### LLM Fields
 
 | Field | Type | Purpose |
 |-------|------|---------|
-| `operation` | string | `classify` (pick a label), `filter` (return structured data), or `augment` (enrich prompt) |
-| `labels` | array | For classify only: the allowed labels (e.g., `["safe", "dangerous"]`) |
+| `operation` | string | `classify` (pick a label), `filter` (return structured data), or `augment` (enrich data) |
 | `prompt` | string | System prompt for the LLM. The engine builds a user prompt with request context. |
 | `model` | string | Model name (passed to `/v1/chat/completions`) |
 | `url` | string | OpenAI-compatible endpoint URL |
@@ -60,33 +58,17 @@ evaluators:
 - Tool name and arguments (for `tools/call`)
 - Available tools (for `tools/list`)
 
-Your system prompt tells the LLM what to do with that context.
+Your system prompt tells the LLM what to do with that context. The LLM's raw output lands in `ctx.llmResult` inside the processor.
 
-### Rules (classify only)
+### Processor
 
-Map each label to an action. Actions are either `"pass"` (continue) or a WASM file path:
-
-```yaml
-rules:
-  safe: "pass"
-  dangerous: {path: "/wasm/block-dangerous.wasm"}
-```
-
-**The WASM script receives the raw LLM output** in `ctx.llmResult` — useful if the LLM returns JSON with extra metadata beyond just the label.
-
-### Action (filter/augment only)
-
-Single WASM action that processes the LLM output:
+The WASM module that receives the LLM's output and acts on it:
 
 ```yaml
-action: {path: "/wasm/assembly-filter.wasm"}
+processor: {path: "/wasm/safety-gate.wasm"}
 ```
 
-Or string shorthand:
-
-```yaml
-action: "/wasm/assembly-filter.wasm"
-```
+The processor receives the full `EvaluationContext` including `llmResult` (the raw LLM response). It parses the result, makes decisions, and calls host functions (`block()`, `pass()`, `filterTools()`, etc.). All decision logic lives here — not in YAML.
 
 ### Error Policy
 
@@ -106,7 +88,6 @@ evaluators:
       method: "tools/call"
     llm:
       operation: classify
-      labels: ["green", "yellow", "red"]
       prompt: |
         You are a strict safety classifier. Classify this tool call as:
         - green: safe operations (read-only, low impact)
@@ -116,19 +97,38 @@ evaluators:
         Respond with ONLY a JSON object: {"level": "green|yellow|red", "reason": "brief explanation"}
       model: "llama3.2"
       url: "http://localhost:11434/v1"
-    rules:
-      green: "pass"
-      yellow: "pass"
-      red: {path: "/wasm/safety-block.wasm"}
+    processor: {path: "/wasm/safety-gate.wasm"}
     on_error: continue
+```
+
+The processor handles all three levels:
+
+```javascript
+import { block, pass, warn } from 'wanaku:evaluator/response';
+import { warn as logWarn } from 'wanaku:evaluator/log';
+
+export function evaluate(ctx) {
+  let level = 'green', reason = '';
+  try {
+    const result = JSON.parse(ctx.llmResult);
+    level = result.level || 'green';
+    reason = result.reason || ctx.llmResult;
+  } catch {
+    reason = ctx.llmResult;
+  }
+
+  if (level === 'red') { logWarn(`Blocked: ${reason}`); block(`Blocked: ${reason}`); }
+  else if (level === 'yellow') { logWarn(`Warning: ${reason}`); warn(`Warning: ${reason}`); }
+  else pass();
+}
 ```
 
 **What happens:**
 1. User calls `restart-database` tool
 2. Engine sends tool name + args to LLM with your prompt
 3. LLM returns `{"level": "red", "reason": "database restart is dangerous"}`
-4. Engine extracts `"red"` label, runs `safety-block.wasm`
-5. WASM script calls `block("Tool call blocked by safety classification: red")`
+4. Engine passes the raw LLM output to `safety-gate.wasm`
+5. WASM processor parses the JSON, sees `"red"`, calls `block()`
 6. User gets JSON-RPC error instead of executing the tool
 
 ### Example 2: Tool Assembly
@@ -140,7 +140,7 @@ evaluators:
   - name: "assembly-gate"
     trigger:
       method: "tools/list"
-      binding: "conv-finance-2024"  # Only for this conversation
+      namespace: "finance-team"
     llm:
       operation: filter
       prompt: |
@@ -150,25 +150,25 @@ evaluators:
         Respond with ONLY a JSON array: ["tool-name-1", "tool-name-2"]
       model: "llama3.2"
       url: "http://localhost:11434/v1"
-    action: {path: "/wasm/assembly-filter.wasm"}
+    processor: {path: "/wasm/assembly-filter.wasm"}
 ```
 
 **What happens:**
-1. User sends `tools/list` with conversation ID `conv-finance-2024`
+1. User sends `tools/list` on the `finance-team` namespace
 2. Engine sends conversation history + available tools to LLM
 3. LLM returns `["read-balance", "transfer-funds", "generate-report"]`
-4. Engine runs `assembly-filter.wasm` with that JSON in `ctx.llmResult`
-5. WASM script parses JSON, calls `copyToolToNamespace(name, ctx.namespace)` for each
+4. Engine passes the JSON to `assembly-filter.wasm`
+5. WASM processor parses the array, calls `copyToolToNamespace()` for each tool
 6. WASM calls `filterTools(approved)` to return only the assembled tools
 7. User sees a curated tool list
 
 **Namespace binding setup:**
 
 ```bash
-# Bind the 'finance-team' namespace to conversation ID 'conv-finance-2024'
+# Bind the 'finance-team' namespace to a conversation ID
 curl -X PUT http://localhost:8080/api/v1/evaluators/namespaces/finance-team \
   -H "Content-Type: application/json" \
-  -d '{"conversationId": "conv-finance-2024"}'
+  -d '{"conversation_id": "wk-A1b2C3d4"}'
 ```
 
 ## Writing Action Scripts in JavaScript
@@ -319,8 +319,7 @@ The first time you compile, expect cryptic errors if your imports don't match th
 Place the `.wasm` file somewhere the server can read it (e.g., `/wasm/` directory), then reference it in your YAML:
 
 ```yaml
-rules:
-  red: {path: "/wasm/safety-block.wasm"}
+processor: {path: "/wasm/safety-gate.wasm"}
 ```
 
 Or update via the management API:
@@ -333,16 +332,28 @@ curl -X PUT http://localhost:8080/api/v1/evaluators \
 
 ### Complete JavaScript Examples
 
-#### Safety Block (classify → block)
+#### Safety Gate (classify → block/warn/pass)
 
 ```javascript
-import { block } from 'wanaku:evaluator/response';
-import { warn } from 'wanaku:evaluator/log';
+import { block, pass, warn } from 'wanaku:evaluator/response';
+import { warn as logWarn } from 'wanaku:evaluator/log';
 
 export function evaluate(ctx) {
-  const reason = `Tool call blocked by safety classification: ${ctx.llmResult}`;
-  warn(reason);
-  block(reason);
+  let level = 'green', reason = '';
+  try {
+    const result = JSON.parse(ctx.llmResult);
+    level = result.level || 'green';
+    reason = result.reason || ctx.llmResult;
+  } catch {
+    reason = ctx.llmResult;
+    const lower = ctx.llmResult.toLowerCase();
+    if (lower.includes('red')) level = 'red';
+    else if (lower.includes('yellow')) level = 'yellow';
+  }
+
+  if (level === 'red') { logWarn(`Blocked: ${reason}`); block(`Blocked: ${reason}`); }
+  else if (level === 'yellow') { logWarn(`Warning: ${reason}`); warn(`Warning: ${reason}`); }
+  else pass();
 }
 ```
 
@@ -523,8 +534,7 @@ The filename comes from your `[package] name` with `_` replacing `-`.
 Same as JavaScript — reference the WASM file in your evaluator config:
 
 ```yaml
-rules:
-  red: {path: "/wasm/safety_block_action.wasm"}
+processor: {path: "/wasm/safety_block_action.wasm"}
 ```
 
 ### Complete Rust Example
@@ -799,20 +809,16 @@ Your system prompt tells the LLM what to extract from that context. The engine s
 
 ```yaml
 on_error: continue  # LLM/WASM failures don't block production
-rules:
-  dangerous: {path: "/wasm/block.wasm"}
-  safe: "pass"
+processor: {path: "/wasm/safety-gate.wasm"}
 ```
 
-If the LLM is down, requests proceed. Only active blocking happens when the LLM explicitly returns `dangerous`.
+If the LLM is down, requests proceed. The processor only blocks when the LLM explicitly classifies as dangerous.
 
 ### Fail-Closed Safety Gate
 
 ```yaml
 on_error: block  # Any failure blocks the request
-rules:
-  safe: "pass"
-  dangerous: {path: "/wasm/block.wasm"}
+processor: {path: "/wasm/safety-gate.wasm"}
 ```
 
 If the LLM is down or WASM crashes, the request is blocked. Use this for high-security environments where availability is secondary to safety.
